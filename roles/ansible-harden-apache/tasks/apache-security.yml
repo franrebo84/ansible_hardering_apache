@@ -1,0 +1,242 @@
+---
+
+## headers for security.conf, reqtimeout for modsecurity slow attacks
+# https://www.acunetix.com/blog/articles/slow-http-dos-attacks-mitigate-apache-http-server/
+- name: Enabled extra modules
+  apache2_module:
+    name: "{{ item }}"
+    state: present
+  with_items:
+    - headers
+    - rewrite
+    - reqtimeout
+    ## ubuntu: ssl stapling
+    - socache_shmcb
+    # https://httpd.apache.org/docs/2.4/howto/http2.html
+    # - http2
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: ansible_os_family == 'Debian'
+
+- name: Disable identified modules
+  apache2_module:
+    name: "{{ item }}"
+    state: absent
+  with_items: "{{ hardenwebserver_apache_mod_disable }}"
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: ansible_os_family == 'Debian'
+
+- name: restrict permissions on apache configuration dir
+  file:
+    dest: "{{ apacheetc }}"
+    mode: '0750'
+    state: directory
+    owner: root
+    group: "{{ www_user }}"
+- name: restrict permissions on few apache configuration files
+  file:
+    dest: "{{ item }}"
+    mode: '0640'
+    state: file
+    owner: root
+    group: "{{ www_user }}"
+    follow: true
+  with_items:
+    - "{{ apache_confdir }}/security.conf"
+    - "{{ apachesslconf }}"
+    - "{{ apacheetc }}/apache2.conf"
+    - "{{ apacheetc }}/ports.conf"
+  when: ansible_os_family == 'Debian'
+
+- name: push harden configuration templates - apacheetc
+  template:
+    src: "{{ item }}.j2"
+    dest: "{{ apacheetc }}/{{ item }}"
+    mode: '0640'
+  with_items: "{{ harden_apache2_etc }}"
+
+- name: push harden configuration templates - apache conf dir
+  template:
+    src: "{{ item }}.j2"
+    dest: "{{ apache_confdir }}/{{ item }}"
+    mode: '0640'
+  with_items: "{{ harden_apache2_confs }}"
+  notify:
+    - restart apache
+    - restart apache - docker
+- name: enable harden configuration templates - apache conf dir
+  file:
+    src: "{{ apache_confdir }}/{{ item }}"
+    dest: "/etc/apache2/conf-enabled/{{ item }}"
+    mode: '0640'
+    state: link
+  with_items: "{{ harden_apache2_confs }}"
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+- name: include security config in default http virtualhost
+  blockinfile:
+    dest: "{{ apacheconf }}"
+    block: |
+            Include {{ apacheetc }}/harden-apache2-http.conf
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: apache http hardening"
+    insertbefore: '^(\s*)</VirtualHost>'
+    mode: '0640'
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: "'harden-apache2-http.conf' in harden_apache2_etc"
+
+- name: include security config in default https virtualhost
+  blockinfile:
+    dest: "{{ apachesslconf }}"
+    block: |
+            Include {{ apacheetc }}/harden-apache2-https.conf
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: apache https hardening"
+    insertbefore: '^(\s*)</VirtualHost>'
+    mode: '0640'
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: hardenwebserver_enable_defaultssl|bool and 'harden-apache2-https.conf' in harden_apache2_etc
+
+- name: include custom log config in default http virtualhost
+  blockinfile:
+    dest: "{{ apacheconf }}"
+    block: |
+            CustomLog {% if ansible_os_family == 'RedHat' %}logs{% else %}${APACHE_LOG_DIR}{% endif %}/access_json.log combined_json
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: apache custom json log"
+    insertbefore: '^(\s*)</VirtualHost>'
+    mode: '0640'
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: not hardenwebserver_disable_http and 'harden-apache2-log.conf' in harden_apache2_confs
+
+- name: include custom log config in default https virtualhost
+  blockinfile:
+    dest: "{{ apachesslconf }}"
+    block: |
+            CustomLog {% if ansible_os_family == 'RedHat' %}logs{% else %}${APACHE_LOG_DIR}{% endif %}/access_json.log combined_json
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: apache custom json log"
+    insertbefore: '^(\s*)</VirtualHost>'
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: hardenwebserver_enable_defaultssl|bool and not hardenwebserver_https_noconfig and 'harden-apache2-log.conf' in harden_apache2_confs
+
+- block:
+    - name: Enabled extra security - apache2.conf
+      replace:
+        dest: "{{ apacheetc }}/apache2.conf"
+        regexp: "{{ item.re }}"
+        replace: "{{ item.n }}"
+        mode: '0640'
+        backup: true
+        validate: 'apachectl -t -f %s'
+      with_items:
+        - { re: '^\tOptions FollowSymLinks$', n: '\tOptions SymLinksIfOwnerMatch' }
+        - { re: '^\tOptions Indexes FollowSymLinks$', n: '\tOptions SymLinksIfOwnerMatch' }
+      notify:
+        - restart apache
+        - restart apache - docker
+
+    ## Note: commented headers can break some apps like nagios
+    ## Note: definition in security.conf are prime vs extra config. so this change is needed.
+    - name: Enabled extra security headers - security.conf
+      replace:
+        dest: "{{ hardenwebserver_apachesecurityconf }}"
+        regexp: "{{ item.re }}"
+        replace: "{{ item.n }}"
+        mode: '0640'
+        backup: true
+      with_items:
+        - { re: '^#ServerTokens Minimal', n: 'ServerTokens Prod' }
+        - { re: '^ServerTokens OS', n: '#ServerTokens OS' }
+        - { re: '^#ServerSignature Off', n: 'ServerSignature Off' }
+        # - { re: '^ServerSignature On', n: '#ServerSignature On' }
+        # - { re: '^#Header set X-Content-Type-Options: "nosniff"', n: 'Header set X-Content-Type-Options: "nosniff"' }
+        # - { re: '^#Header set X-Frame-Options: "sameorigin"', n: 'Header set X-Frame-Options: "sameorigin"' }
+        #  - { re: '^#Header set X-Frame-Options: "sameorigin"', n: 'Header set X-Frame-Options: "deny"' }
+        # notify:
+        #   - restart apache
+        #   - restart apache - docker
+
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+# - fail: msg=test
+
+- block:
+    - name: Enabled extra security headers
+      lineinfile:
+        dest: "{{ hardenwebserver_apachesecurityconf }}"
+        line: "{{ item }}"
+        mode: '0640'
+        create: true
+      with_items:
+        - 'ServerTokens Prod'
+        - 'ServerSignature Off'
+        - 'Header set X-Content-Type-Options: "nosniff"'
+        - 'Header set X-Frame-Options: "sameorigin"'
+        ## HTTPoxy, 201607
+        # - 'RequestHeader unset Proxy early'
+        # - 'Header set X-Frame-Options: "deny"'
+        ## FIXME! problem w escaping ;
+        # - 'Header set Strict-Transport-Security "max-age=16070400; includeSubDomains"'
+        # - 'Header set X-XSS-Protection "1; mode=block"'
+  when: ansible_os_family == "RedHat"
+
+- name: remove default index file - information disclosure
+  file: dest=/var/www/html/index.html state=absent
+  when: hardenwebserver_remove_defaultindex is defined and hardenwebserver_remove_defaultindex
+
+- block:
+    - name: RedHat7- | Ensure selinux dependencies are present
+      package:
+        name:
+          - libselinux-python
+          - libsemanage-python
+          - policycoreutils-python
+        state: present
+      register: pkg_result
+      until: pkg_result is success
+      when: ansible_distribution_major_version|int < 8
+
+    - name: RedHat8+ | Ensure selinux dependencies are present
+      package:
+        name:
+          - python3-libselinux
+          - python3-libsemanage
+          - python3-policycoreutils
+        state: present
+      register: pkg_result
+      until: pkg_result is success
+      when: ansible_distribution_major_version|int >= 8
+
+    - name: RedHat | Allow proxy to network connect in selinux
+      seboolean:
+        name: httpd_can_network_connect
+        state: true
+        persistent: true
+  when: ansible_os_family == "RedHat" and ansible_selinux is defined and ansible_selinux.status != 'disabled'
+
+# https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/Managing_Confined_Services/sect-Managing_Confined_Services-Configuration_examples-Changing_port_numbers.html
+# https://wiki.centos.org/HowTos/SELinux#head-ad837f60830442ae77a81aedd10c20305a811388
+- block:
+    - name: RedHat | Allow httpd to listen to unusual ports
+      seport:
+        ports: "{{ item }}"
+        proto: tcp
+        setype: http_port_t
+        state: present
+      with_items: "{{ hardenwebserver_ports_redhat_selinux_allow }}"
+  when: >
+    ansible_os_family == "RedHat" and
+    ansible_selinux and
+    hardenwebserver_ports_redhat_selinux_allow is defined and
+    hardenwebserver_ports_redhat_selinux_allow != []

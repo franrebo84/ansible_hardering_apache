@@ -1,0 +1,44 @@
+---
+# https://nghttp2.org/documentation/h2load-howto.html
+
+- name: testing | git clone h2load repository
+  git:
+    repo: https://github.com/nghttp2/nghttp2.git
+    dest: /var/tmp/nghttp2
+    version: "{{ h2load_gitrev | default(omit) }}"
+    update: false
+
+- name: testing | ensure h2load dependencies are present
+  package:
+    name: "{{ item }}"
+    state: present
+  with_items: "{{ testing_h2load_deps }}"
+  register: pkg_result
+  until: pkg_result is success
+
+- name: testing | build h2load
+  command: "{{ item }}"
+  with_items:
+    - git submodule update --init
+    - autoreconf -i
+    - automake
+    - autoconf
+    - ./configure
+    - make
+    - make install
+  args:
+    chdir: /var/tmp/nghttp2
+    creates: /usr/local/bin/h2load
+  environment: "{{ h2load_env | default(omit) }}"
+  notify:
+    - run ldconfig
+
+- name: testing | executing h2load
+  shell: |
+    set -o pipefail
+    h2load -n100000 -c100 -m10 {{ testing_target }} | tee /tmp/h2load.log
+  args:
+    executable: /bin/bash
+    creates: /tmp/h2load.log
+  environment:
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

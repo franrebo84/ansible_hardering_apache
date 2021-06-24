@@ -1,0 +1,14 @@
+---
+ - hosts: all
+   gather_facts: no
+   tasks:
+     - name: Count our fruit
+       ansible.builtin.debug:
+         msg: "{{ item }} with index {{ my_idx }}"
+       loop:
+         - apple
+         - banana
+         - pear
+       loop_control:
+         index_var: my_idx
+     

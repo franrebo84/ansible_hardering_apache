@@ -1,0 +1,5 @@
+- import_tasks: ssh_port.yml
+  tags: ssh_port
+
+- import_tasks: ssh_options.yml
+  tags: sshd_config

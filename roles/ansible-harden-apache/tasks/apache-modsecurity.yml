@@ -1,0 +1,74 @@
+---
+## https://www.digitalocean.com/community/tutorials/how-to-set-up-mod_security-with-apache-on-debian-ubuntu
+## https://www.feistyduck.com/library/modsecurity-handbook-free/
+
+- name: modsecurity install
+  package:
+    name: "{{ item }}"
+    state: present
+  with_items: "{{ harden_apache_modsecurity }}"
+  register: pkg_result
+  until: pkg_result is success
+
+- name: Check if modsecurity.conf exists
+  stat: path={{ modsecurity_conf }}
+  register: confms
+- name: Debug | modsecurity.conf state
+  debug: var=confms
+- name: copy default recommended modsecurity.conf
+  copy:
+    src: /etc/modsecurity/modsecurity.conf-recommended
+    dest: "{{ modsecurity_conf }}"
+    mode: '0644'
+    remote_src: true
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: not confms.stat.exists and (ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu')
+
+- include: apache-modsecurity-crs2.yml
+  when: (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version|int < 18)
+
+- include: apache-modsecurity-crs3.yml
+  when: (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version|int >= 18)
+
+- name: review modsecurity.conf (1)
+  replace:
+    dest: "{{ modsecurity_conf }}"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+    mode: '0644'
+    backup: yes
+  with_items:
+    - { regexp: 'SecRuleEngine .*', replace: "SecRuleEngine {{ hardenwebserver_apache_modsecurity_engine }}" }
+    - { regexp: 'SecResponseBodyAccess On', replace: 'SecResponseBodyAccess Off' }
+    - { regexp: 'SecAuditLogParts ABIJDEFHZ', replace: 'SecAuditLogParts ABCIJDEFHZ' }
+  notify:
+    - restart apache
+    - restart apache - docker
+
+- name: whitelist ip Headers
+  lineinfile:
+    path: "{{ modsecurity_conf }}"
+    state: present
+    line:  SecRule REQUEST_HEADERS:Host "{{ item }}" "id:'101{{ my_idx }}', phase:1,t:none,nolog,pass,ctl:ruleRemoveById=920350
+  with_items:
+  - "{{ whitelist_headers }}"
+  loop_control:
+    index_var: my_idx
+  when: whitelist_headers is defined
+
+   
+- name: Configure Json log in modsecurity.conf - PR#914, 2.9.1+
+  lineinfile:
+    dest: "{{ modsecurity_conf }}"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.replace }}"
+    mode: '0644'
+    backup: yes
+  with_items:
+    - { regexp: 'SecAuditLogFormat .*', replace: "SecAuditLogFormat JSON" }
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: harden_apache_modsecurity_jsonlog and not (ansible_os_family == "RedHat" and ansible_distribution_major_version|int <= 7)

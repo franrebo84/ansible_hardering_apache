@@ -1,0 +1,141 @@
+---
+
+- name: yum | apache-ssl packages install
+  yum:
+    name:
+      - mod_ssl
+      - openssl
+    state: present
+  when: ansible_os_family == "RedHat"
+  register: pkg_result
+  until: pkg_result is success
+
+## size should be >= certificate key size
+- name: generate ssl dhparam key
+  # command: "openssl dhparam -out {{ ssl_privatedir }}/dhparam4.pem 4096 creates=/etc/nginx/ssl/dhparam4.pem"
+  command: >
+    openssl dhparam -dsaparam -out {{ ssl_privatedir }}/dhparam.pem 4096
+  args:
+    creates: "{{ ssl_privatedir }}/dhparam.pem"
+- name: ensure good permissions for ssl dhparam key
+  file: "dest={{ ssl_privatedir }}/dhparam.pem mode=0440 owner=root group={{ www_user }}"
+
+- include: certificate-selfsigned.yml
+  when: hardenwebserver_cert is defined and hardenwebserver_cert == 'selfsigned'
+
+- include: certificate-letsencrypt.yml
+  when: hardenwebserver_cert is defined and hardenwebserver_cert == 'letsencrypt'
+
+- name: Debian | update certificate info in Apache configuration
+  replace:
+    dest: "{{ apachesslconf }}"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+    mode: '0640'
+  with_items:
+    - { regexp: '/etc/ssl/certs/ssl-cert-snakeoil.pem', replace: '{{ ssl_dir }}/{{ ansible_fqdn }}.crt' }
+    - { regexp: '/etc/ssl/private/ssl-cert-snakeoil.key', replace: '{{ ssl_privatedir }}/{{ ansible_fqdn }}.key' }
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: ansible_os_family == 'Debian'
+
+- block:
+    - name: Redhat | check if ssl.conf exists
+      stat: path={{ apachesslconf }}
+      register: defssl
+    - name: RedHat | update certificate info in Apache configuration
+      replace:
+        dest: "{{ apachesslconf }}"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+        mode: '0640'
+      with_items:
+        - { regexp: '^SSLCertificateFile .*', replace: 'SSLCertificateFile {{ ssl_dir }}/{{ ansible_fqdn }}.crt' }
+        - { regexp: '^SSLCertificateKeyFile .*',
+            replace: 'SSLCertificateKeyFile {{ ssl_privatedir }}/{{ ansible_fqdn }}.key'
+        }
+      notify:
+        - restart apache
+        - restart apache - docker
+      when: defssl.stat.exists
+  when: ansible_os_family == 'RedHat'
+
+- name: Debian | enable ssl module
+  apache2_module: name=ssl state=present
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: ansible_os_family == 'Debian'
+
+- name: Debian | enable default ssl apache site
+  file:
+    src: "{{ apachesslconf }}"
+    dest: /etc/apache2/sites-enabled/default-ssl.conf
+    mode: '0640'
+    state: link
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: (ansible_os_family == 'Debian') and hardenwebserver_enable_defaultssl
+- name: Debian | disable default ssl apache site
+  file: dest=/etc/apache2/sites-enabled/default-ssl.conf state=absent
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: (ansible_os_family == 'Debian') and not hardenwebserver_enable_defaultssl
+- block:
+    - name: RedHat | check if backup default ssl apache site
+      stat: path=/etc/httpd/conf.d/ssl.conf.orig
+      register: defsslorig
+    - name: RedHat | check if default ssl apache site
+      stat: path=/etc/httpd/conf.d/ssl.conf
+      register: defssl
+    - name: RedHat | Copy default ssl apache site
+      copy:
+        src: /etc/httpd/conf.d/ssl.conf.orig
+        dest: /etc/httpd/conf.d/ssl.conf
+        mode: '0640'
+      when: defsslorig.stat.exists and not defssl.stat.exists
+  when: (ansible_os_family == 'RedHat') and hardenwebserver_enable_defaultssl
+- block:
+    - name: RedHat | Ensure backup of default ssl apache site
+      stat: path=/etc/httpd/conf.d/ssl.conf.orig
+      register: defsslorig
+    - name: RedHat | check if default ssl apache site
+      stat: path=/etc/httpd/conf.d/ssl.conf
+      register: defssl
+    - name: RedHat | Backup default ssl apache site
+      copy:
+        src: /etc/httpd/conf.d/ssl.conf
+        dest: /etc/httpd/conf.d/ssl.conf.orig
+        mode: '0600'
+        remote_src: true
+      when: not defsslorig.stat.exists and defssl.stat.exists
+    - name: RedHat | disable default ssl apache site
+      file: dest=/etc/httpd/conf.d/ssl.conf state=absent
+      notify:
+        - restart apache
+        - restart apache - docker
+    - name: Ensure httpd is listening on extra ports
+      lineinfile:
+        dest: /etc/httpd/httpd.conf
+        regexp: "^Listen {{ item }}$"
+        line: "Listen {{ item }}"
+        mode: '0644'
+        backup: true
+      with_items: "{{ harden_apache_extra_ports }}"
+  when: (ansible_os_family == 'RedHat') and not hardenwebserver_enable_defaultssl
+
+- name: HTTP Public Key Pinning (HPKP) hash extraction
+  shell: |
+    set -o pipefail
+    openssl req -in {{ ssl_dir }}/{{ ansible_fqdn }}.csr -pubkey -noout |
+        openssl rsa -pubin -outform der |
+        openssl dgst -sha256 -binary |
+        openssl enc -base64
+  args:
+    executable: /bin/bash
+  register: hardenwebserver_cert_pinning_value
+  changed_when: false
+  when: harden_apache_hpkp_enable

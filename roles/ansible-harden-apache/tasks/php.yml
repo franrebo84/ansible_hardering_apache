@@ -1,0 +1,102 @@
+---
+# https://github.com/sensiolabs/security-checker
+# https://github.com/sektioneins/pcc
+# https://github.com/psecio/iniscan
+
+- name: Ensure php is present
+  package:
+    name: "{{ item }}"
+    state: present
+  with_items: "{{ harden_apache_php }}"
+  register: pkg_result
+  until: pkg_result is success
+
+- name: PHP | Configure default time
+  lineinfile:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^date.timezone = .*'
+    line: "date.timezone = '{{ harden_php_date_timezone }}'"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | Disable expose php
+  replace:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^expose_php = .*'
+    replace: "expose_php = {{ harden_php_expose_php }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | Disable url_fopen
+  replace:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^allow_url_fopen = .*'
+    replace: "allow_url_fopen = {{ harden_php_allow_url_fopen }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | Disable many dangerous functions
+  replace:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^disable_functions =.*'
+    replace: "disable_functions = {{ harden_php_disable_functions }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | Memory limit
+  lineinfile:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^memory_limit = .*'
+    line: "memory_limit = {{ harden_php_memory_limit }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | Include path
+  lineinfile:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^include_path = .*'
+    line: "include_path = {{ harden_php_include_path }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | session.use_strict_mode
+  lineinfile:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^session.use_strict_mode = .*'
+    line: "session.use_strict_mode = {{ harden_php_session_use_strict_mode | lower }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | session.cookie_secure
+  lineinfile:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^session.cookie_secure =.*'
+    line: "session.cookie_secure = {{ harden_php_session_cookie_secure | lower }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- name: PHP | session.cookie_httponly
+  replace:
+    dest: "{{ harden_apache_phpini | default(harden_apache_phpdir + '/' + item + '/php.ini') }}"
+    regexp: '^session.cookie_httponly =.*'
+    replace: "session.cookie_httponly = {{ harden_php_session_cookie_httponly | lower }}"
+    mode: '0644'
+  with_items: "{{ _harden_apache_php_variants }}"
+
+- import_tasks: php7-snuffleupagus.yml
+  when: >
+    (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version|int >= 16) and
+    harden_php7_snuffleupagus
+
+- name: snuffleupagus | Ensure absent
+  file:
+    dest: "{{ harden_apache_phpdir }}/{{ item }}/conf.d/php7-snuffleupagus.{{ php_confext }}"
+    state: absent
+  with_items:
+    - "{{ _harden_apache_php_variants }}"
+  notify:
+    - restart apache
+    - restart apache - docker
+  when: >
+    (ansible_distribution == 'Ubuntu' and ansible_distribution_major_version|int >= 16) and
+    not harden_php7_snuffleupagus

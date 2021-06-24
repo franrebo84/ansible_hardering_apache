@@ -1,0 +1,79 @@
+---
+## require ansible v2.2 for letsencrypt module
+
+- name: apt | certificate packages dependencies
+  apt: name=ssl-cert state=present update_cache=yes cache_valid_time=3600
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  register: pkg_result
+  until: pkg_result is success
+- name: install deps
+  package: name=openssl state=present
+  register: pkg_result
+  until: pkg_result is success
+
+- block:
+    - name: creating letsencrypt user key
+      shell: >
+        openssl genrsa 4096 > {{ ssl_privatedir }}/user.key
+            creates={{ ssl_privatedir }}/user.key
+      register: userkey
+    # - debug: var=userkey
+    - name: export public user key
+      shell: >
+        openssl rsa -in {{ ssl_privatedir }}/user.key
+            -pubout
+            > {{ ssl_privatedir }}/user.pub
+            creates={{ ssl_privatedir }}/user.pub
+    - name: ensure correct permissions of user key
+      file: "dest={{ ssl_privatedir }}/user.key owner=root group={{ ssl_user }} mode=0440"
+  when: hardenwebserver_letsencrypt_user_key is not defined or not hardenwebserver_letsencrypt_user_key
+
+- name: generate certificate csr to submit
+  command: >
+    openssl req -sha256 -nodes -newkey rsa:4096
+        -keyout {{ ssl_privatedir }}/{{ ansible_fqdn }}.key
+        -subj "{{ hardenwebserver_certinfo }}/CN={{ certificate_cn }}"
+        -out {{ ssl_dir }}/{{ ansible_fqdn }}.csr
+        creates={{ ssl_dir }}/{{ ansible_fqdn }}.csr
+
+## https://letsencrypt.org/certificates/
+- name: create root chain file for ssl stapling
+  shell: |
+    set -o pipefail
+    curl https://letsencrypt.org/certs/isrgrootx1.pem
+        https://letsencrypt.org/certs/lets-encrypt-x3-cross-signed.pem
+        https://letsencrypt.org/certs/lets-encrypt-x4-cross-signed.pem | tee {{ ssl_dir }}/ca-certs.pem > /dev/null
+  args:
+    executable: /bin/bash
+    creates: "{{ ssl_dir }}/ca-certs.pem"
+- name: ensure root chain file not empty
+  stat: path={{ ssl_dir }}/ca-certs.pem
+  register: rootchain
+- name: failure
+  fail: msg="FATAL! root chain file generation fails."
+  when: not rootchain.stat.exists or rootchain.stat.size == 0
+
+- name: register letsencrypt challenge
+  acme_certificate:
+    account_key: "{{ ssl_privatedir }}/user.key"
+    csr: "{{ ssl_dir }}/{{ ansible_fqdn }}.csr"
+    dest: "{{ ssl_dir }}/{{ ansible_fqdn }}.crt"
+    acme_directory: "{{ hardenwebserver_letsencrypt_acme_dir }}"
+  notify:
+    - add public file to www dir to fullfill letsencrypt challenge
+
+# - debug: var=le_challenge
+- name: ensure letsencrypt directory exists
+  file: "dest={{ hardenwebserver_rootdir }}/.well-known/acme-challenge state=directory mode=0755"
+
+- name: Flush handlers
+  meta: flush_handlers
+
+## Note: validation is over http... can't remove http before this task.
+- name: validate letsencrypt challenge
+  acme_certificate:
+    account_key: "{{ ssl_privatedir }}/user.key"
+    csr: "{{ ssl_dir }}/{{ ansible_fqdn }}.csr"
+    dest: "{{ ssl_dir }}/{{ ansible_fqdn }}.crt"
+    data: "{{ le_challenge }}"
+    acme_directory: "{{ hardenwebserver_letsencrypt_acme_dir }}"

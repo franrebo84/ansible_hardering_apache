@@ -1,0 +1,12 @@
+---
+
+- name: Ensure curl is present
+  package:
+    name: curl
+    state: present
+
+- include: testing-siege.yml
+  when: ansible_distribution_major_version|int < 8
+
+- include: testing-h2load.yml
+  when: harden_apache_testing_h2load

@@ -1,0 +1,17 @@
+{{ ansible_managed | comment }}
+
+<FilesMatch "^/csp/report.php">
+    SetHandler application/x-httpd-php
+    Order allow,deny
+    Satisfy all
+</FilesMatch>
+
+<FilesMatch "/csp/log">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+{% if ansible_os_family == "RedHat" and ansible_distribution_major_version|int < 8 %}
+<Directory /csp/log/>
+     php_admin_value engine Off
+</Directory>
+{% endif %}

@@ -1,0 +1,96 @@
+---
+ - hosts: all
+   become: yes
+   pre_tasks:
+   - name: Set up multiple authorized keys
+     authorized_key:
+       user: ubuntu
+       state: present
+       key: '{{ item }}'
+     with_file:
+       - public_keys/fran.pub
+     tags: public_keys
+
+   - name: Install Packages
+     package:
+       name: 
+         - git
+         - mlocate
+         - htop 
+         - sysstat
+         - vim 
+         - lynx
+       state: present
+   - name: Put SELinux in permissive mode, logging actions that would be blocked.
+     selinux:
+       policy: targeted
+       state: permissive
+
+   roles:
+   - role: ssh_hardering
+     gather_facts: no
+   - role: ansible-harden-apache
+     vars: 
+       whitelist_headers:
+         - 192.168.88.37
+         - 192.168.88.38
+     tags: apache
+
+   - role: florianutz.ubuntu2004_cis
+     become: yes
+     vars:
+       ubuntu2004cis_httpd_server: true 
+       ubuntu2004cis_rule_1_5_1: false
+       ubuntu2004cis_rule_5_3_1: false
+       ubuntu2004cis_rule_5_3_3: false
+       ubuntu2004cis_rule_5_4_1_1: true
+       ubuntu2004cis_rule_5_4_1_2: true
+       ubuntu2004cis_rule_5_4_1_3: true
+       ubuntu2004cis_rule_5_4_1_4: true
+       ubuntu2004cis_rule_5_4_1_5: true
+       ubuntu2004cis_rule_5_4_5: false
+       ubuntu2004cis_rule_5_5: true
+       ubuntu2004cis_rule_5_6: false
+     tags: cis
+
+
+   - role: oefenweb.fail2ban
+     vars:
+       fail2ban_services:
+         # In older versions of Fail2Ban this is called ssh
+         - name: sshd
+           port: 2222
+           maxretry: 5
+           bantime: 10
+#         - name: Apache - monitoring for Apache login attempts
+#           port: http,https
+#           filter: apache
+#           logpath: /var/log/{httpd,apache*}/*error.log
+#           maxretry: 3
+#           findtime: 300
+         - name: apache-noscript # ban clients that are searching for scripts on the website to execute and exploit.
+           port: http,https
+           filter: apache-noscript
+           logpath: /var/log/apache*/*error.log
+           maxretry: 2
+           findtime: 300
+         - name: apache-overflows # block clients who are attempting to request unusually long and suspicious URLs.
+           port: http,https
+           filter: apache-overflows
+           logpath: /var/log/apache*/*error.log
+           maxretry: 2
+           findtime: 300
+         - name: apache-badbots # stop some known malicious bot request pattern
+           port: http,https
+           filter: apache-badbots
+           logpath: /var/log/apache*/*error.log
+           maxretry: 5
+           findtime: 300
+         - name: php-url-fopen # blocks attempts to use certain PHP behavior for malicious purposes
+           port: http,https
+           filter: php-url-fopen
+           logpath: /var/log/apache*/*error.log
+           maxretry: 5
+           findtime: 300
+     tags: fail2ban
+

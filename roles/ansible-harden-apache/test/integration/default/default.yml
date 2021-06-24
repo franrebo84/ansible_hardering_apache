@@ -1,0 +1,11 @@
+---
+
+- hosts: all
+  environment:
+    http_proxy: "{{ lookup('env', 'http_proxy') }}"
+    https_proxy: "{{ lookup('env', 'https_proxy') }}"
+    no_proxy: "{{ lookup('env', 'no_proxy') }}"
+  vars:
+    - harden_apache_testing: true
+  roles:
+    - juju4.harden_apache
