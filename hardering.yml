@@ -4,7 +4,7 @@
    pre_tasks:
    - name: Set up multiple authorized keys
      authorized_key:
-       user: ubuntu
+       user: <<CHANGEME>>
        state: present
        key: '{{ item }}'
      with_file:
@@ -18,13 +18,12 @@
          - mlocate
          - htop 
          - sysstat
+         - iotop
+         - ncdu
          - vim 
+         - chkrootkit
          - lynx
        state: present
-   - name: Put SELinux in permissive mode, logging actions that would be blocked.
-     selinux:
-       policy: targeted
-       state: permissive
 
    roles:
    - role: ssh_hardering
