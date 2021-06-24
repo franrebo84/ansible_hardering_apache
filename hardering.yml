@@ -26,8 +26,6 @@
        state: present
 
    roles:
-   - role: ssh_hardering
-     gather_facts: no
    - role: ansible-harden-apache
      vars: 
        whitelist_headers:
